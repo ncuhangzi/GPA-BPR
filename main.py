@@ -1,7 +1,9 @@
 # coding=utf-8
 from GPBPR import GPBPR
+from GPABPR import GPABPR
 import torch
 
+import os
 from torch.utils.data import TensorDataset,DataLoader
 from torch import load, sigmoid, cat, rand, bmm, mean, matmul
 from torch.nn.functional import logsigmoid
@@ -9,6 +11,8 @@ from torch.nn.init import uniform_
 import numpy as np
 from torch.optim import Adam
 from sys import argv
+from RatingDataset import TrainDataset, TestDataset
+from GPUUtil import set_device, move_to_device, move_model_to_device
 
 """
     my_config is a dict which contains necessary filepath in trainning and evaluating GP-BPR model
@@ -27,9 +31,126 @@ my_config = {
     "train_data": r"./data/train.csv",
     "valid_data": r"./data/valid.csv",
     "test_data": r"./data/test.csv",
-    "model_file": r"./model/GPBPR.model",
+    "model_file": r"./model/GPABPR.model",
 }
- 
+root = os.path.dirname(os.path.realpath(__file__)) + "/data/IQON3000/"
+metapath_files = ["pmf_outfitmetapath_01.txt"]
+#feature 可能也不用匯入 GPBPR本身有替user item生成embedding可是維度可能和MCRec要得不一樣
+feature_file_dict = {"u": "user_node_emb.txt","t": "top_node_emb.txt", "b": "bottom_node_emb.txt"}
+
+train_data_file = "user_bottom_train.txt"
+# test_data_file = "user_bottom_test.txt"
+
+for i in range(len(metapath_files)):
+    metapath_files[i] = root + metapath_files[i]
+
+for feature_type, feature_file_name in feature_file_dict.items():
+    feature_file_dict[feature_type] = root + feature_file_name
+
+# #要改
+# train_dataset = TrainDataset(root + train_data_file, metapath_files, negative_num, feature_file_dict)
+# test_dataset = TestDataset(train_dataset, root + test_data_file)
+
+# train_data_loader = DataLoader(train_dataset, shuffle=True, batch_size=train_batch_size)
+# test_data_loader = DataLoader(test_dataset, shuffle=True, batch_size=test_batch_size)
+
+max_user_id, max_item_id = 0, 0
+
+with open(root + train_data_file, "r") as input:
+    for line in input.read().splitlines():
+        arr = line.split(" ")
+        u, i = int(arr[0]), int(arr[1])
+        max_user_id = max(max_user_id, u)
+        max_item_id = max(max_item_id, i)
+
+#load metapath data成特定輸入格式 => list of metapaths
+metapath_list = []
+
+def load_metapath(metapath_files):
+
+    type2id = {}
+    id2type = {}
+    tmp_type_set = set()
+
+    for metapath_file in metapath_files:
+        with open(metapath_file) as input:
+            for line in input.read().splitlines():
+                arr = line.split(' ')
+                
+                for nodes in arr[0].split('-'):
+                    tmp_type_set.add(nodes[0])
+
+    for node_type in tmp_type_set:
+        id = len(id2type)
+        type2id[node_type] = id
+        id2type[id] = node_type
+
+    print("node type " + str(type2id))
+
+    
+
+    for metapath_file in metapath_files:
+        path_dict = {}
+        max_path_num = 0
+        hop_num = 0
+
+        with open(metapath_file) as input:
+            for line in input.read().splitlines():
+                arr = line.split(' ')
+                max_path_num = 1
+                hop_num = len(arr[0].split('-'))
+        #create the path_dict
+        with open(metapath_file) as input:
+            for line in input.read().splitlines():
+                arr = line.strip().split(' ')
+                path = arr[0]
+                tmp = path.split('-')
+                for node in tmp:
+                    index = node[1:]
+                    if node[0] == 'u':
+                        u = int(index)
+                    elif node[0] == 'b':
+                        i = int(index)
+
+                path_dict[(u, i)] = []
+
+
+        with open(metapath_file) as input:
+            for line in input.read().splitlines():
+                arr = line.strip().split(' ')
+                # u, i = arr[0].split(',')
+                # u, i = int(u), int(i)
+                # u,i = 0,0
+
+                # path_dict[(u, i)] = []
+
+                path = arr[0]
+                # tmp = path.split(' ')[0].split('-')
+                tmp = path.split('-')
+                node_list = []
+                for node in tmp:
+                    #index = int(node[1:]) - 1 #why -1?
+                    index = node[1:]
+                    if node[0] == 'u':
+                        u = int(index)
+                    elif node[0] == 'b':
+                        i = int(index)
+
+                    node_list.append([type2id[node[0]], index]) #檢索條件不一樣 需要調整
+                # path_dict[(u, i)] = (node_list)
+                path_dict[(u, i)].append(node_list)
+                max_path_num = max(len(path_dict[(u, i)]), max_path_num)
+
+        metapath_list.append((metapath_file, path_dict, max_path_num, hop_num, max_user_id, max_item_id,id2type))
+
+load_metapath(metapath_files)
+metapath_list_attributes = []
+#metapath_list_attributes includes path_num, hop_num
+# metapath_list[i]: (metapath_file, path_dict, path_num, hop_num,max_user_id, max_item_id) 
+for i in range(len(metapath_list)):
+    metapath_list_attributes.append((metapath_list[i][2], metapath_list[i][3]))# 2,3
+
+
 def load_csv_data(train_data_path):
     result = []
     with open(train_data_path,'r') as fp:
@@ -175,8 +296,10 @@ def F(mode ,hidden_dim, batch_size, device):
         for i in train_data:
             item_set.add(str(int(i[2])))
             item_set.add(str(int(i[3])))
-        gpbpr = GPBPR(user_set = user_set, item_set = item_set, 
-            embedding_weight=embedding_weight, uniform_value = 0.3).to(device)
+        # move_to_device(metapath_list)
+        # move_to_device(metapath_list_attributes)
+        gpbpr = GPABPR(user_set = user_set, item_set = item_set, 
+            embedding_weight=embedding_weight,metapath_feature=metapath_list,metapath_list_attributes=metapath_list_attributes, uniform_value = 0.3).to(device)
     
     opt = Adam([
     {

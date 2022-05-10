@@ -1,9 +1,33 @@
+from re import I
+from sys import meta_path
 import torch
 import random
+import numpy as np
 from torch import load, sigmoid, cat, rand, bmm, mean, matmul, stack
 from torch.nn import *
 from torch.optim import Adam
 from torch.nn.init import uniform_
+from MCRec import MCRec
+import pickle
+
+gpu_id = 0
+latent_dim = 128
+att_size = 128
+layer_size = [512, 256, 128, 64]
+eval_processes_num = 4
+negative_num = 1
+
+with open('user_dict.txt', 'rb') as f:
+    data = f.read()
+    user_dict = pickle.loads(data)
+
+with open('item_dict.txt', 'rb') as f:
+    data = f.read()
+    item_dict = pickle.loads(data)
+# user_dict = np.load('user_dict.npy', allow_pickle='TRUE')
+# item_dict = np.load('item_dict.npy', allow_pickle='TRUE')
+user_dict_r=dict([val,key] for key,val in user_dict.items())
+item_dict_r=dict([val,key] for key,val in item_dict.items())
 
 
 class BPR(Module):
@@ -69,13 +93,36 @@ class BPR(Module):
             user_gama.norm(p=p)+ item_beta.norm(p=p)+ user_beta.norm(p=p)+item_gama.norm(p=p)
 
 class VTBPR(BPR):
-    def __init__(self, user_set, item_set, hidden_dim=512,
+    def __init__(self, user_set, item_set,metapath_feature,metapath_list_attributes, hidden_dim=512,
         theta_text = True, theta_visual = True):
         super(VTBPR, self).__init__(user_set, item_set, hidden_dim=hidden_dim)
 
         self.theta_user_visual = Embedding(len(user_set), self.hidden_dim)
         self.theta_user_text = Embedding(len(user_set), self.hidden_dim)
+        # metapath_list[i]: (metapath_file, path_dict, path_num, hop_num,max_user_id, max_item_id,id2type) 
+        #initiate MCRec
+        # arow = len(metapath_feature)
+        # acol = len(metapath_feature[0])
+        # print("Rows : " + str(arow))
+        # print("Columns : " + str(acol))
+        self.metapath_feature = metapath_feature
+        self.metapath_list_attributes=metapath_list_attributes[0]
+        metapath_list_attributes = []
+        
+        for i in range(len(self.metapath_feature)):
+            metapath_list_attributes.append((self.metapath_list_attributes[0], self.metapath_list_attributes[1]))
+        global MCRec
+        self.mcrec = MCRec(latent_dim=latent_dim, att_size=att_size, feature_size=self.hidden_dim,
+                  negative_num=negative_num,
+                  user_num=self.metapath_feature[0][4], item_num=self.metapath_feature[0][5],
+                  metapath_list_attributes=metapath_list_attributes,
+                  layer_size=layer_size)
 
+        self.path_dict = self.metapath_feature[0][1]
+        self.id2type = self.metapath_feature[0][6]
+        self.user_num = self.metapath_feature[0][4]
+        self.item_num= self.metapath_feature[0][5]
+        self.negative_num = 1
         init.uniform_(self.theta_user_text.weight, 0, 0.01)
         init.uniform_(self.theta_user_visual.weight, 0, 0.01)
 
@@ -90,12 +137,42 @@ class VTBPR(BPR):
         bpr = BPR.forward(self, users, items)
         theta_user_visual = self.get_theta_user_visual(users)
         theta_user_text = self.get_theta_user_text(users)
+        userss = users
+        metapath_input_list= [ ]
+        for idx in range(batchsize): #這裡的迴圈數要和batch數一樣
+            #self.negative_num+1  試試看要不要+1
+            k = self.negative_num-1
+            metapath_input = np.zeros((self.negative_num , self.metapath_list_attributes[0], self.metapath_list_attributes[1], self.hidden_dim), dtype=np.float32) 
+            metapath_input_list.append(metapath_input)
+            u= user_dict[int(userss[idx])]
+            i= item_dict[int(items[idx])]
+            u, i = int(u), int(i)
+            if (u, i) in self.path_dict:
+                for p_i in range(len(self.path_dict[(u, i)])): #每個path
+                    for p_j in range(len(self.path_dict[(u, i)][p_i])): #裡的每個node
+                        type_id = self.path_dict[(u, i)][p_i][p_j][0]
+                        node_type = self.id2type[type_id]
+                        if  node_type == 'u':
+                            
+                            metapath_input_list[idx][k][p_i][p_j] = self.get_user_gama([str(user_dict_r[u])]).cpu().detach().numpy()
+                        elif node_type == ('t'or'b') :
+                              
+                            metapath_input_list[idx][k][p_i][p_j] = self.get_item_gama([str(item_dict_r[i])]).cpu().detach().numpy()
         
+            # metapath_input_list.append(metapath_input)
+        
+        #user, item, metapath index 系統轉換
+        user_input  = np.array([user_dict[int(user)] for user in userss])
+        item_input = np.array([item_dict[int(item)] for item in items])       
+        metapath_inputs = [metapath_input_list]
+        
+        mcrec = MCRec.forward(self.mcrec, user_input, item_input, metapath_inputs)
         return bpr \
             + bmm(theta_user_visual.view(batchsize, 1, self.hidden_dim), 
                 visual_features.view(batchsize, self.hidden_dim , 1)).view(batchsize) \
             + bmm(theta_user_text.view(batchsize, 1, self.hidden_dim), 
-                textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize)
+                textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize) \
+            + mcrec
          
     def fit(self, users, items, visual_features, textural_features):
         batchsize = len(users)
@@ -103,12 +180,43 @@ class VTBPR(BPR):
 
         theta_user_visual = self.get_theta_user_visual(users)
         theta_user_text = self.get_theta_user_text(users)
+        userss = users
+        metapath_input_list= [ ]
+        for idx in range(batchsize): #這裡的迴圈數要和batch數一樣
+            #self.negative_num+1  原本有+1
+            k = self.negative_num-1
+            metapath_input = np.zeros((self.negative_num , self.metapath_list_attributes[0], self.metapath_list_attributes[1], self.hidden_dim), dtype=np.float32) 
+            metapath_input_list.append(metapath_input)
+            u= user_dict[int(userss[idx])]
+            i= item_dict[int(items[idx])]
+            u, i = int(u), int(i)
+            if (u, i) in self.path_dict:
+                for p_i in range(len(self.path_dict[(u, i)])): #每個path
+                    for p_j in range(len(self.path_dict[(u, i)][p_i])): #裡的每個node
+                        type_id = self.path_dict[(u, i)][p_i][p_j][0]
+                        node_type = self.id2type[type_id]
+                        if  node_type == 'u':
+                            
+                            metapath_input_list[idx][k][p_i][p_j] = self.get_user_gama([str(user_dict_r[u])]).cpu().detach().numpy()
+                        elif node_type == ('t'or'b') :
+                              
+                            metapath_input_list[idx][k][p_i][p_j] = self.get_item_gama([str(item_dict_r[i])]).cpu().detach().numpy()
         
+            # metapath_input_list.append(metapath_input)
+        # print('metalist shape:',np.array(metapath_input_list).shape)
+        #user, item, metapath index 系統轉換
+        user_input  = np.array([user_dict[int(user)] for user in userss])
+        item_input = np.array([item_dict[int(item)] for item in items])       
+        metapath_inputs = [metapath_input_list]
+        # print('user:',user_input, 'item:',item_input)
+        mcrec = MCRec.forward(self.mcrec, user_input, item_input, metapath_inputs)
+
         return bpr \
             + bmm(theta_user_visual.view(batchsize, 1, self.hidden_dim), 
                 visual_features.view(batchsize, self.hidden_dim , 1)).view(batchsize) \
             + bmm(theta_user_text.view(batchsize, 1, self.hidden_dim), 
-                textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize), \
+                textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize) \
+            + mcrec, \
             bprweight + self.get_theta_user_text(set(users)).norm(p=2) + self.get_theta_user_visual(set(users)).norm(p=2)
 
 class TextCNN(Module):
@@ -147,13 +255,13 @@ class TextCNN(Module):
             cat([conv2d(input).squeeze_(-1).squeeze_(-1) for conv2d in self.text_cnn], 1)
         )
 
-class GPBPR(Module):
-    def __init__(self, user_set, item_set, embedding_weight ,
+class GPABPR(Module):
+    def __init__(self, user_set, item_set, embedding_weight ,metapath_feature, metapath_list_attributes,
         max_sentence = 83,  text_feature_dim=300, 
         visual_feature_dim = 2048, hidden_dim=512,
         uniform_value = 0.5):
         
-        super(GPBPR, self) .__init__()
+        super(GPABPR, self) .__init__()
         self.epoch = 0
         self.uniform_value = uniform_value
         self.hidden_dim = hidden_dim
@@ -177,9 +285,11 @@ class GPBPR(Module):
         '''
             text features embedding layers
         '''
-        self.vtbpr = VTBPR(user_set=user_set, item_set=item_set, hidden_dim=self.hidden_dim)
+        self.vtbpr = VTBPR(user_set=user_set, item_set=item_set, metapath_feature=metapath_feature,metapath_list_attributes=metapath_list_attributes, hidden_dim=self.hidden_dim)
         self.textcnn = TextCNN(sentence_size=(max_sentence,text_feature_dim), output_size=hidden_dim)
         print('Module already prepared, {} users, {} items'.format(len(user_set), len(item_set)))
+
+
 
     def forward(self, batch, visual_features, text_features, can_s,**args):
         # pre deal 該batch 要處理的資料
@@ -438,6 +548,6 @@ class GPBPR(Module):
                 cujkweight + self.text_embedding( 
                             cat(
                                 [text_features[J].unsqueeze(0) for J in set(Is+Js+Ks)], 0
-                            ) .cuda()
+                            ).cuda()
                         ).norm(p=2)
       
