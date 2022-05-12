@@ -210,7 +210,7 @@ class VTBPR(BPR):
         metapath_inputs = [metapath_input_list]
         # print('user:',user_input, 'item:',item_input)
         mcrec = MCRec.forward(self.mcrec, user_input, item_input, metapath_inputs)
-
+        
         return bpr \
             + bmm(theta_user_visual.view(batchsize, 1, self.hidden_dim), 
                 visual_features.view(batchsize, self.hidden_dim , 1)).view(batchsize) \
@@ -420,7 +420,13 @@ class GPABPR(Module):
                         K_text_latent_tmp = self.textcnn(self.text_embedding(text_features[K].unsqueeze(0).cuda()).unsqueeze_(1))
                         text_ik_tmp = bmm( I_text_latent_tmp .unsqueeze(1), K_text_latent_tmp .unsqueeze(-1)).squeeze_(-1).squeeze_(-1)
                         p_ik_tmp = 0.5 * visual_ik_tmp + 0.5 * text_ik_tmp
-                        f_ik = self.uniform_value * p_ik_tmp + (1 - self.uniform_value) * torch.tensor(cuk.cpu().detach().numpy()[i])
+                        cuk_tmp = torch.tensor(cuk.cpu().detach().numpy()[i]).cuda()
+                        # print(cuk_tmp)
+                        # print('p_ik_tmp:', p_ik_tmp.size())
+                        # print('cuk:', cuk.size())
+                        # print('cuk_tmp:', cuk_tmp.size())
+                        f_ik = self.uniform_value * p_ik_tmp + (1 - self.uniform_value) * cuk_tmp
+                        # print('f_ik size:',f_ik.size())
                         bucket.append(f_ik.item())
                         bucket_idx.append(K)
                 #bucket.insert(0, torch.tensor(f_ij.cpu().detach().numpy()[i]))

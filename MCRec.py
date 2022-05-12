@@ -36,6 +36,7 @@ class MetaPathEmbedding(nn.Module):
         self.feature_size = feature_size
         self.latent_dim = latent_dim
         # self.lam = lambda x, index: x[:, index, :, :]
+        global Lam
         def Lam(x, index):
             return x[:, index, :, :]
         self.lam = Lam
@@ -59,7 +60,7 @@ class MetaPathEmbedding(nn.Module):
         self.dropout = nn.Dropout(p=0.5)
 
     def forward(self, input):
-
+        
         input = torch.from_numpy(np.asarray(input)).cuda()
         # input.shape: batch_size, negative_num + 1, path_num, hop_num， feature_size
 
@@ -110,7 +111,11 @@ class UIAttention(nn.Module):
 
         self.dense = nn.Linear(in_features=latent_dim * 2, out_features=att_size)
         nn.init.xavier_normal_(self.dense.weight.data)
-        self.lam = lambda x: F.softmax(x, dim=1)
+        # global Lam4
+        # def Lam4(x):
+        #     return F.softmax(x, dim=1)
+        # self.lam = lambda x: F.softmax(x, dim=1)
+        self.lam4 = Lam2
 
     def forward(self, input, path_output):
         inputs = torch.cat((input, path_output), 1)
@@ -118,7 +123,7 @@ class UIAttention(nn.Module):
         output = self.dense(inputs)
         output = torch.relu(output)
 
-        atten = self.lam(output)
+        atten = self.lam4(output)
 
         # element-wise produt
         output = input * atten
@@ -141,9 +146,20 @@ class MetaPathAttention(nn.Module):
         nn.init.xavier_normal_(self.dense_layer_2.weight.data)
 
         # self.lam1 = lambda x, index: x[:, index, :]
-        self.lam1 = lambda x, index: x[:, index, :]
-        self.lam2 = lambda x: F.softmax(x, dim=1)
-        self.lam3 = lambda metapath_latent, atten: torch.sum(metapath_latent * torch.unsqueeze(atten, -1), 1)
+        global Lam1, Lam2, Lam3
+        def Lam1(x, index):
+            return x[:, index, :]
+        def Lam2(x):
+            return  F.softmax(x, dim=1)
+        def Lam3(metapath_latent, atten):
+            return torch.sum(metapath_latent * torch.unsqueeze(atten, -1), 1)
+        self.lam1 = Lam1
+        self.lam2 = Lam2
+        self.lam3 = Lam3
+
+        # self.lam1 = lambda x, index: x[:, index, :]
+        # self.lam2 = lambda x: F.softmax(x, dim=1)
+        # self.lam3 = lambda metapath_latent, atten: torch.sum(metapath_latent * torch.unsqueeze(atten, -1), 1)
 
     def forward(self, user_latent, item_latent, metapath_latent):
         # metapath_latent: batch_size * negative_num_plus, metapath_type_num, latent_dim
@@ -255,12 +271,13 @@ class MCRec(nn.Module):
         item_atten = self.item_att(item_input, path_atten)
 
         output = torch.cat((user_atten, path_atten, item_atten), 1)
-
+        # print(output)
         for layer in self.layers:
             output = layer(output)
             output = F.relu(output)
-
+        
         output = self.predict(output)
-        output = torch.sigmoid(output)
-
+        # print(output)
+        # output = torch.sigmoid(output)
+        output = torch.squeeze(output,1)
         return output
