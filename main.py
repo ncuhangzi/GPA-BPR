@@ -9,6 +9,7 @@ from torch import load, sigmoid, cat, rand, bmm, mean, matmul
 from torch.nn.functional import logsigmoid
 from torch.nn.init import uniform_
 import numpy as np
+import math
 from torch.optim import Adam
 from sys import argv
 from RatingDataset import TrainDataset, TestDataset
@@ -242,7 +243,7 @@ def evaluating(model, mode, test_csv, visual_features, text_features):
 
         MRR += mrr
         pos += float(torch.sum(output.ge(0))) #用ge function將output值跟0相比，較0大為true較0小為false，將output元素相加 有包含True的output就會加1
-    print( "evaling process: " , test_csv , model.epoch, pos/len(testData), "MRR: ", MRR/(len(testData)/batch_s)) #剩下資料不到batch size即小於100，會使分母變小，MRR而因此變大
+    print( "evaling process: " , test_csv , model.epoch, pos/len(testData), "MRR: ", MRR/math.ceil((len(testData)/batch_s))) #剩下資料不到batch size即小於100，會使分母變小，MRR而因此變大
     #print( "Mrr : ", rr/len(testData))
 
 def get_mrr(indices, targets):
