@@ -31,10 +31,10 @@ my_config = {
     "train_data": r"./data/train.csv",
     "valid_data": r"./data/valid.csv",
     "test_data": r"./data/test.csv",
-    "model_file": r"./model/GPABPR.model",
+    "model_file": r"./model/GPABPR_V.model",
 }
 root = os.path.dirname(os.path.realpath(__file__)) + "/data/IQON3000/"
-metapath_files = ["pmf_outfitmetapath_01.txt"]
+metapath_files = ["pmf_outfitmetapath_005.txt"]
 #feature 可能也不用匯入 GPBPR本身有替user item生成embedding可是維度可能和MCRec要得不一樣
 feature_file_dict = {"u": "user_node_emb.txt","t": "top_node_emb.txt", "b": "bottom_node_emb.txt"}
 
@@ -304,7 +304,7 @@ def F(mode ,hidden_dim, batch_size, device):
     opt = Adam([
     {
         'params': gpbpr.parameters(),
-        'lr': 0.001,
+        'lr': 0.0005,
     }
     ])
 

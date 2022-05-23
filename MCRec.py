@@ -281,3 +281,45 @@ class MCRec(nn.Module):
         # output = torch.sigmoid(output)
         output = torch.squeeze(output,1)
         return output
+
+    def fit(self, user_input, item_input, metapath_inputs):
+
+        # user_input.shape/item_input.shape: batch_size, negative_num + 1
+        # metapath_inputs: num_of_metapath_types, batch_size, negative_num + 1, path_num, latent_dim, hop_num
+        path_output = None
+        for i in range(len(metapath_inputs)):
+            
+            output = self.path_latent_vecs[i](tuple(metapath_inputs[i]))
+
+            if path_output is None:
+                path_output = output
+            else:
+
+                path_output = torch.cat((path_output, output), 2)
+        # print('before path output',path_output.size())
+        # batch_size * negative_num_plus, latent_dim, metapath_type
+        # path_output = path_output.view((len(metapath_inputs), -1, self.latent_dim))
+        path_output = path_output.view((-1,len(metapath_inputs), self.latent_dim))
+        # print('after path output',path_output.size())
+        user_input = self.user_latent(user_input)
+        item_input = self.item_latent(item_input)
+
+        path_atten = self.metapath_att(user_input, item_input, path_output)
+        #set checkpoint
+        # user_atten = checkpoint(self.user_att(user_input, path_atten))
+        # item_atten = checkpoint(self.item_att(item_input, path_atten))
+        user_atten = self.user_att(user_input, path_atten)
+        item_atten = self.item_att(item_input, path_atten)
+
+        output = torch.cat((user_atten, path_atten, item_atten), 1)
+        # print(output)
+        for layer in self.layers:
+            output = layer(output)
+            output = F.relu(output)
+        
+        output = self.predict(output)
+        # print(output)
+        # output = torch.sigmoid(output)
+        output = torch.squeeze(output,1)
+        return output, user_atten
+

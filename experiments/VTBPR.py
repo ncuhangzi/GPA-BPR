@@ -92,7 +92,9 @@ class VTBPR(BPR):
         theta_user_text = self.get_theta_user_text(users)
         
         return bpr \
-             + bmm(theta_user_text.view(batchsize, 1, self.hidden_dim), 
+            + bmm(theta_user_visual.view(batchsize, 1, self.hidden_dim), 
+                visual_features.view(batchsize, self.hidden_dim , 1)).view(batchsize) \
+            + bmm(theta_user_text.view(batchsize, 1, self.hidden_dim), 
                 textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize)
          
     def fit(self, users, items, visual_features, textural_features):
@@ -103,9 +105,11 @@ class VTBPR(BPR):
         theta_user_text = self.get_theta_user_text(users)
         
         return bpr \
+            + bmm(theta_user_visual.view(batchsize, 1, self.hidden_dim), 
+                visual_features.view(batchsize, self.hidden_dim , 1)).view(batchsize) \
             + bmm(theta_user_text.view(batchsize, 1, self.hidden_dim), 
                 textural_features.view(batchsize, self.hidden_dim, 1 )).view(batchsize), \
-            bprweight + self.get_theta_user_text(set(users)).norm(p=2) 
+            bprweight + self.get_theta_user_text(set(users)).norm(p=2) + self.get_theta_user_visual(set(users)).norm(p=2)
 
 class TextCNN(Module):
     def __init__(self, sentence_size = (83, 300), output_size = 512, uniform=False):
@@ -324,7 +328,7 @@ class GPABPR(Module):
 
 
         # union
-        return  cuj - cuk, candidates
+        return   cuj - cuk, candidates
     def fit(self, batch, visual_features, text_features, **args):
         """
             with the same input as forward and return a loss with weight regularaition
@@ -423,12 +427,12 @@ class GPABPR(Module):
         p_ik = 0.5 * visual_ik + 0.5 * text_ik
         
         cujkweight = self.vtbpr.get_user_gama(set(Us)).norm(p=2) \
-            + self.vtbpr.get_theta_user_text(set(Us)).norm(p=2) \
+            + self.vtbpr.get_theta_user_visual(set(Us)).norm(p=2) + self.vtbpr.get_theta_user_text(set(Us)).norm(p=2) \
             + self.vtbpr.get_item_gama(set(Js+Ks)).norm(p=2)
         
         
         # union
-        return  cuj - cuk ,\
+        return  cuj - cuk, \
                 cujkweight + self.text_embedding( 
                             cat(
                                 [text_features[J].unsqueeze(0) for J in set(Is+Js+Ks)], 0
